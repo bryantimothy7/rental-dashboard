@@ -1,12 +1,6 @@
 import requests
 import base64
 import json
-import streamlit as st
-import pandas as pd
-from datetime import datetime, timedelta
-
-YEARS_AHEAD = 10
-RENEWAL_RATE = 0.07
 
 def save_to_github(file_path="data.xlsx"):
     """Save the Excel file to GitHub repository"""
@@ -65,6 +59,13 @@ def save_to_github(file_path="data.xlsx"):
     except Exception as e:
         st.error(f"Error saving to GitHub: {e}")
         return False
+        
+import streamlit as st
+import pandas as pd
+from datetime import datetime, timedelta
+
+YEARS_AHEAD = 10
+RENEWAL_RATE = 0.07
 
 def format_rupiah(value):
     return f"Rp {value:,.0f}".replace(",", ".")
@@ -410,13 +411,12 @@ def main():
     else:
         st.info("No tenants to edit. Add a tenant first.")
 
-    # Define projection parameters here so they can be used in both sections
-    years_before = 1  # Show 1 year before current year
-    years_after = 3   # Show 3 years after current year
-
     # Removed the "Projected vs Actual Income" section with line chart
 
     st.header("📊 Future Income Projection (5-Year Window)")
+    
+    years_before = 1  # Show 1 year before current year
+    years_after = 3   # Show 3 years after current year
     
     # Use the new function that returns both summary and breakdown
     future_df, breakdown_dfs = project_income_with_breakdown(st.session_state["df"], years_before=years_before, years_after=years_after)
@@ -472,89 +472,88 @@ def main():
             else:
                 st.info(f"No projected income for {year}")
 
-    # Add the 7% Renewal section (Fixed the indentation issue here)
-    st.header("📈 Total Income with 7% Renewal Increases")
+st.header("📈 Total Income with 7% Renewal Increases")
     
-    st.write("This projection shows the total income if all leases are renewed with a 7% price increase at each renewal.")
+st.write("This projection shows the total income if all leases are renewed with a 7% price increase at each renewal.")
 
-    # Get projections with renewal increases
-    renewal_df, renewal_breakdowns = project_income_with_renewals(
-        st.session_state["df"], 
-        years_before=years_before, 
-        years_after=years_after, 
-        renewal_rate=RENEWAL_RATE
-    )
+# Get projections with renewal increases
+renewal_df, renewal_breakdowns = project_income_with_renewals(
+    st.session_state["df"], 
+    years_before=years_before, 
+    years_after=years_after, 
+    renewal_rate=RENEWAL_RATE
+)
 
-    # Display the dataframe with conditional formatting
-    st.dataframe(
-        renewal_df,
-        column_config={
-            "Year": st.column_config.NumberColumn(format="%d"),
-            "Projected Income with Renewals (Rp)": "Projected Income with Renewals",
-            "Note": "Status"
-        },
-        hide_index=True
-    )
+# Display the dataframe with conditional formatting
+st.dataframe(
+    renewal_df,
+    column_config={
+        "Year": st.column_config.NumberColumn(format="%d"),
+        "Projected Income with Renewals (Rp)": "Projected Income with Renewals",
+        "Note": "Status"
+    },
+    hide_index=True
+)
 
-    # Calculate total for the displayed period with renewals
-    try:
-        renewal_total = sum([
+# Calculate total for the displayed period with renewals
+try:
+    renewal_total = sum([
+        float(x.replace("Rp ", "").replace(".", "")) 
+        for x in renewal_df["Projected Income with Renewals (Rp)"]
+    ])
+    st.metric("Total Projected Income with Renewals (5-Year Window)", format_rupiah(renewal_total))
+except:
+    st.warning("Could not calculate total due to formatting issues.")
+
+# Optional: Add a comparison to show the difference between fixed and renewal projections
+try:
+    # Calculate standard projection total (reusing the value if it exists)
+    if 'total_sum' in locals():
+        standard_total = total_sum
+    else:
+        # Need to recalculate the standard projection total
+        standard_total = sum([
             float(x.replace("Rp ", "").replace(".", "")) 
-            for x in renewal_df["Projected Income with Renewals (Rp)"]
+            for x in future_df["Projected Total Income (Rp)"]
         ])
-        st.metric("Total Projected Income with Renewals (5-Year Window)", format_rupiah(renewal_total))
-    except:
-        st.warning("Could not calculate total due to formatting issues.")
+    
+    # Calculate the difference and percentage increase
+    difference = renewal_total - standard_total
+    percent_increase = (difference / standard_total) * 100 if standard_total > 0 else 0
+    
+    # Show the comparison
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Additional Income from Renewals", format_rupiah(difference))
+    with col2:
+        st.metric("Percentage Increase", f"{percent_increase:.2f}%")
+except:
+    pass
 
-    # Optional: Add a comparison to show the difference between fixed and renewal projections
-    try:
-        # Calculate standard projection total (reusing the value if it exists)
-        if 'total_sum' in locals():
-            standard_total = total_sum
-        else:
-            # Need to recalculate the standard projection total
-            standard_total = sum([
-                float(x.replace("Rp ", "").replace(".", "")) 
-                for x in future_df["Projected Total Income (Rp)"]
-            ])
-        
-        # Calculate the difference and percentage increase
-        difference = renewal_total - standard_total
-        percent_increase = (difference / standard_total) * 100 if standard_total > 0 else 0
-        
-        # Show the comparison
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Additional Income from Renewals", format_rupiah(difference))
-        with col2:
-            st.metric("Percentage Increase", f"{percent_increase:.2f}%")
-    except:
-        pass
-
-    # Display the breakdown for each year if desired
-    if st.checkbox("Show Tenant Breakdown with Renewal Increases"):
-        st.subheader("📊 Income Breakdown by Tenant with Renewal Increases")
-        
-        # Create tabs for each year
-        renewal_years = sorted(renewal_breakdowns.keys())
-        renewal_tabs = st.tabs([str(year) for year in renewal_years])
-        
-        # Display breakdowns in tabs
-        for i, year in enumerate(renewal_years):
-            with renewal_tabs[i]:
-                if not renewal_breakdowns[year].empty:
-                    st.write(f"### Income Sources for {year} (with renewal increases)")
-                    st.dataframe(
-                        renewal_breakdowns[year],
-                        column_config={
-                            "Tenant": "Tenant Name",
-                            "Income with Renewals (Rp)": "Income",
-                            "% of Total": "Percentage"
-                        },
-                        hide_index=True
-                    )
-                else:
-                    st.info(f"No projected income for {year}")
+# Display the breakdown for each year if desired
+if st.checkbox("Show Tenant Breakdown with Renewal Increases"):
+    st.subheader("📊 Income Breakdown by Tenant with Renewal Increases")
+    
+    # Create tabs for each year
+    renewal_years = sorted(renewal_breakdowns.keys())
+    renewal_tabs = st.tabs([str(year) for year in renewal_years])
+    
+    # Display breakdowns in tabs
+    for i, year in enumerate(renewal_years):
+        with renewal_tabs[i]:
+            if not renewal_breakdowns[year].empty:
+                st.write(f"### Income Sources for {year} (with renewal increases)")
+                st.dataframe(
+                    renewal_breakdowns[year],
+                    column_config={
+                        "Tenant": "Tenant Name",
+                        "Income with Renewals (Rp)": "Income",
+                        "% of Total": "Percentage"
+                    },
+                    hide_index=True
+                )
+            else:
+                st.info(f"No projected income for {year}")
 
     st.header("📈 Growth Projection: 7% Increase at Each Renewal")
     growth_records = []
