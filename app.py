@@ -20,7 +20,7 @@ def parse_custom_split(split_str, years):
     except:
         return None
 
-def project_income(df, years_before=1, years_after=3):
+def project_income_with_breakdown(df, years_before=1, years_after=3):
     # Get current year
     current_year = datetime.now().year
     min_year = current_year - years_before
@@ -29,8 +29,12 @@ def project_income(df, years_before=1, years_after=3):
     # Initialize projections dict with 0 for all years in range
     projections = {year: 0 for year in range(min_year, max_year + 1)}
     
+    # Create breakdown dict to track individual tenant contributions
+    breakdown = {year: {} for year in range(min_year, max_year + 1)}
+    
     for _, row in df.iterrows():
         try:
+            tenant = row["Tenant"]
             start_date = pd.to_datetime(row["Start Date"])
             start_year = start_date.year
             lease_duration = int(row["Lease Duration (Years)"])
@@ -53,20 +57,28 @@ def project_income(df, years_before=1, years_after=3):
                 
                 # Only include if within lease duration
                 if relative_year >= 0 and relative_year < lease_duration:
+                    income_for_year = 0
+                    
                     if scheme == "Full Lease Upfront" and relative_year == 0:
                         # Full payment happens in first year of each cycle
-                        projections[display_year] += rent_per_year * lease_duration
+                        income_for_year = rent_per_year * lease_duration
                     elif scheme == "Custom Split" and custom_split and relative_year < len(custom_split):
                         # Use custom split percentages
-                        projections[display_year] += rent_per_year * lease_duration * custom_split[relative_year]
+                        income_for_year = rent_per_year * lease_duration * custom_split[relative_year]
                     else:  # Default: Split evenly
-                        projections[display_year] += rent_per_year
+                        income_for_year = rent_per_year
+                    
+                    # Add to total projections
+                    projections[display_year] += income_for_year
+                    
+                    # Add to breakdown
+                    breakdown[display_year][tenant] = breakdown[display_year].get(tenant, 0) + income_for_year
                 
         except Exception as e:
             # Silently continue on error
             continue
 
-    # Convert to DataFrame and format
+    # Convert to DataFrame and format for summary
     years = sorted(projections.keys())
     proj_df = pd.DataFrame([
         {"Year": year, "Projected Total Income (Rp)": projections[year]} 
@@ -78,10 +90,30 @@ def project_income(df, years_before=1, years_after=3):
     if current_year in proj_df["Year"].values:
         proj_df.loc[proj_df["Year"] == current_year, "Note"] = "Current Year"
     
-    # Format currency
+    # Format currency for summary
     proj_df["Projected Total Income (Rp)"] = proj_df["Projected Total Income (Rp)"].apply(lambda x: format_rupiah(x))
     
-    return proj_df
+    # Create breakdown dataframes
+    breakdown_dfs = {}
+    for year in years:
+        if breakdown[year]:
+            # Create DataFrame from this year's breakdown
+            year_df = pd.DataFrame([
+                {"Tenant": tenant, "Income (Rp)": amount}
+                for tenant, amount in breakdown[year].items()
+            ])
+            # Sort by income amount (descending)
+            year_df = year_df.sort_values("Income (Rp)", ascending=False)
+            # Format currency
+            year_df["Income (Rp)"] = year_df["Income (Rp)"].apply(lambda x: format_rupiah(x))
+            # Add percentage of total
+            total = sum(breakdown[year].values())
+            year_df["% of Total"] = year_df["Income (Rp)"].apply(
+                lambda x: f"{float(x.replace('Rp ', '').replace('.', '')) / total * 100:.1f}%"
+            )
+            breakdown_dfs[year] = year_df
+    
+    return proj_df, breakdown_dfs
 
 def main():
     st.title("Rental Asset Dashboard")
@@ -184,19 +216,15 @@ def main():
     else:
         st.info("No tenants to edit. Add a tenant first.")
 
-    st.header("📈 Projected vs Actual Income")
-    chart_df = st.session_state["df"].copy()
-    chart_df["Start Year"] = pd.to_datetime(chart_df["Start Date"], errors="coerce").dt.year
-    summary = chart_df.groupby("Start Year")[["Projected Income (Rp/year)", "Actual Income (Rp/year)"]].sum()
-    if not summary.empty:
-        st.line_chart(summary)
+    # Removed the "Projected vs Actual Income" section with line chart
 
     st.header("📊 Future Income Projection (5-Year Window)")
     
     years_before = 1  # Show 1 year before current year
     years_after = 3   # Show 3 years after current year
     
-    future_df = project_income(st.session_state["df"], years_before=years_before, years_after=years_after)
+    # Use the new function that returns both summary and breakdown
+    future_df, breakdown_dfs = project_income_with_breakdown(st.session_state["df"], years_before=years_before, years_after=years_after)
     
     # Apply styling to highlight current year
     current_year = datetime.now().year
@@ -224,6 +252,30 @@ def main():
         st.metric("Total Projected Income (5-Year Window)", format_rupiah(total_sum))
     except:
         st.warning("Could not calculate total due to formatting issues.")
+    
+    # Display the breakdown for each year
+    st.subheader("📊 Income Breakdown by Tenant (Per Year)")
+    
+    # Create tabs for each year
+    years = sorted(breakdown_dfs.keys())
+    tabs = st.tabs([str(year) for year in years])
+    
+    # Display breakdowns in tabs
+    for i, year in enumerate(years):
+        with tabs[i]:
+            if not breakdown_dfs[year].empty:
+                st.write(f"### Income Sources for {year}")
+                st.dataframe(
+                    breakdown_dfs[year],
+                    column_config={
+                        "Tenant": "Tenant Name",
+                        "Income (Rp)": "Income",
+                        "% of Total": "Percentage"
+                    },
+                    hide_index=True
+                )
+            else:
+                st.info(f"No projected income for {year}")
 
     st.header("📈 Growth Projection: 7% Increase at Each Renewal")
     growth_records = []
