@@ -1,3 +1,65 @@
+import requests
+import base64
+import json
+
+def save_to_github(file_path="data.xlsx"):
+    """Save the Excel file to GitHub repository"""
+    try:
+        # Read the file
+        with open(file_path, "rb") as file:
+            content = file.read()
+        
+        # Encode file content
+        encoded_content = base64.b64encode(content).decode()
+        
+        # GitHub API info - replace these values with your own
+        github_token = st.secrets["github"]["token"]
+        repo_owner = "bryantimothy7"  # Change this to your GitHub username
+        repo_name = "rental-dashboard"         # Change this to your repository name
+        
+        # API headers
+        headers = {
+            "Authorization": f"token {github_token}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        
+        # Get current file sha (needed for update)
+        r = requests.get(
+            f"https://api.github.com/repos/{repo_owner}/{repo_name}/contents/{file_path}",
+            headers=headers
+        )
+        
+        # Check if file exists
+        if r.status_code == 200:
+            sha = r.json()["sha"]
+            # Prepare API request to update existing file
+            url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/contents/{file_path}"
+            data = {
+                "message": "Update data from Streamlit app",
+                "content": encoded_content,
+                "sha": sha
+            }
+        else:
+            # Prepare API request to create new file
+            url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/contents/{file_path}"
+            data = {
+                "message": "Create data from Streamlit app",
+                "content": encoded_content
+            }
+        
+        # Commit the file
+        response = requests.put(url, headers=headers, data=json.dumps(data))
+        
+        if response.status_code in [200, 201]:
+            return True
+        else:
+            st.error(f"GitHub API error: {response.status_code}, {response.json()}")
+            return False
+            
+    except Exception as e:
+        st.error(f"Error saving to GitHub: {e}")
+        return False
+        
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
@@ -307,7 +369,10 @@ def main():
     
     if st.button("💾 Save Data"):
         st.session_state["df"].to_excel("data.xlsx", index=False)
-        st.success("Data saved successfully!")
+        if save_to_github():
+            st.success("Data saved successfully to GitHub!")
+        else:
+            st.warning("Local file saved, but GitHub update failed.")
 
     st.header("🛠️ Troubleshoot & Fix Issues")
 
