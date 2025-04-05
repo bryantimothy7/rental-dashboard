@@ -195,7 +195,121 @@ def project_income_with_breakdown(df, years_before=1, years_after=3):
             breakdown_dfs[year] = year_df
     
     return proj_df, breakdown_dfs
+    
+def project_income_with_renewals(df, years_before=1, years_after=3, renewal_rate=0.07):
+    """
+    Project income over a time period with renewal increases.
+    Applies the renewal_rate increase (e.g., 7%) at each lease renewal.
+    Shows total income per year if all leases are renewed with the increase.
+    """
+    # Get current year
+    current_year = datetime.now().year
+    min_year = current_year - years_before
+    max_year = current_year + years_after
+    
+    # Initialize projections dict with 0 for all years in range
+    projections = {year: 0 for year in range(min_year, max_year + 1)}
+    
+    # Create breakdown dict to track individual tenant contributions
+    breakdown = {year: {} for year in range(min_year, max_year + 1)}
+    
+    for _, row in df.iterrows():
+        try:
+            tenant = row["Tenant"]
+            start_date = pd.to_datetime(row["Start Date"])
+            start_year = start_date.year
+            lease_duration = int(row["Lease Duration (Years)"])
+            base_rent_per_year = float(row["Projected Income (Rp/year)"])
+            scheme = row.get("Payment Scheme", "Split Per Year")
+            custom_split_str = str(row.get("Custom Split (%)", ""))
+            custom_split = parse_custom_split(custom_split_str, lease_duration)
+            
+            # Process each year in our projection range
+            for year in range(min_year, max_year + 1):
+                # Skip years before lease starts
+                if year < start_year:
+                    continue
+                    
+                # Calculate which lease cycle this belongs to
+                years_since_start = year - start_year
+                cycle = years_since_start // lease_duration
+                year_in_cycle = years_since_start % lease_duration
+                
+                # Apply renewal increase for each completed cycle
+                rent_per_year = base_rent_per_year * ((1 + renewal_rate) ** cycle)
+                
+                # Calculate income based on payment scheme
+                income = 0
+                
+                if scheme == "Split Per Year":
+                    # Simple yearly payment
+                    income = rent_per_year
+                    
+                elif scheme == "Full Lease Upfront":
+                    # Full amount only in the first year of each cycle
+                    if year_in_cycle == 0:
+                        # For upfront payment, calculate the entire lease value with the current rate
+                        income = rent_per_year * lease_duration
+                        
+                elif scheme == "Custom Split" and custom_split:
+                    # Custom percentage split for each year in cycle
+                    if year_in_cycle < len(custom_split):
+                        # Calculate year's share of the total lease payment
+                        total_lease_payment = rent_per_year * lease_duration
+                        income = total_lease_payment * custom_split[year_in_cycle]
+                else:
+                    # Default to yearly payment if scheme is unrecognized
+                    income = rent_per_year
+                
+                # Add income to projection
+                if income > 0:
+                    projections[year] += income
+                    breakdown[year][tenant] = breakdown[year].get(tenant, 0) + income
+                
+        except Exception as e:
+            # Skip entries with errors
+            continue
 
+    # Convert to DataFrame for display
+    years = sorted(projections.keys())
+    proj_df = pd.DataFrame([
+        {"Year": year, "Projected Income with Renewals (Rp)": projections[year]} 
+        for year in years
+    ])
+    
+    # Highlight current year
+    proj_df["Note"] = ""
+    if current_year in proj_df["Year"].values:
+        proj_df.loc[proj_df["Year"] == current_year, "Note"] = "Current Year"
+    
+    # Format currency for summary (after calculations)
+    proj_df["Projected Income with Renewals (Rp)"] = proj_df["Projected Income with Renewals (Rp)"].apply(lambda x: format_rupiah(x))
+    
+    # Create breakdown dataframes
+    breakdown_dfs = {}
+    for year in years:
+        if breakdown[year]:
+            # Create DataFrame with raw values
+            year_df = pd.DataFrame([
+                {"Tenant": tenant, "Income": amount}
+                for tenant, amount in breakdown[year].items()
+            ])
+            
+            # Calculate percentages and sort
+            total = sum(breakdown[year].values())
+            year_df["% of Total"] = year_df["Income"].apply(
+                lambda x: f"{(x / total * 100):.1f}%" if total > 0 else "0.0%"
+            )
+            year_df = year_df.sort_values("Income", ascending=False)
+            
+            # Format currency last
+            year_df["Income with Renewals (Rp)"] = year_df["Income"].apply(lambda x: format_rupiah(x))
+            year_df = year_df.drop("Income", axis=1)  # Remove unformatted column
+            
+            breakdown_dfs[year] = year_df
+    
+    return proj_df, breakdown_dfs
+    
 def main():
     st.title("Rental Asset Dashboard")
 
@@ -351,6 +465,89 @@ def main():
                     column_config={
                         "Tenant": "Tenant Name",
                         "Income (Rp)": "Income",
+                        "% of Total": "Percentage"
+                    },
+                    hide_index=True
+                )
+            else:
+                st.info(f"No projected income for {year}")
+
+st.header("📈 Total Income with 7% Renewal Increases")
+    
+st.write("This projection shows the total income if all leases are renewed with a 7% price increase at each renewal.")
+
+# Get projections with renewal increases
+renewal_df, renewal_breakdowns = project_income_with_renewals(
+    st.session_state["df"], 
+    years_before=years_before, 
+    years_after=years_after, 
+    renewal_rate=RENEWAL_RATE
+)
+
+# Display the dataframe with conditional formatting
+st.dataframe(
+    renewal_df,
+    column_config={
+        "Year": st.column_config.NumberColumn(format="%d"),
+        "Projected Income with Renewals (Rp)": "Projected Income with Renewals",
+        "Note": "Status"
+    },
+    hide_index=True
+)
+
+# Calculate total for the displayed period with renewals
+try:
+    renewal_total = sum([
+        float(x.replace("Rp ", "").replace(".", "")) 
+        for x in renewal_df["Projected Income with Renewals (Rp)"]
+    ])
+    st.metric("Total Projected Income with Renewals (5-Year Window)", format_rupiah(renewal_total))
+except:
+    st.warning("Could not calculate total due to formatting issues.")
+
+# Optional: Add a comparison to show the difference between fixed and renewal projections
+try:
+    # Calculate standard projection total (reusing the value if it exists)
+    if 'total_sum' in locals():
+        standard_total = total_sum
+    else:
+        # Need to recalculate the standard projection total
+        standard_total = sum([
+            float(x.replace("Rp ", "").replace(".", "")) 
+            for x in future_df["Projected Total Income (Rp)"]
+        ])
+    
+    # Calculate the difference and percentage increase
+    difference = renewal_total - standard_total
+    percent_increase = (difference / standard_total) * 100 if standard_total > 0 else 0
+    
+    # Show the comparison
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Additional Income from Renewals", format_rupiah(difference))
+    with col2:
+        st.metric("Percentage Increase", f"{percent_increase:.2f}%")
+except:
+    pass
+
+# Display the breakdown for each year if desired
+if st.checkbox("Show Tenant Breakdown with Renewal Increases"):
+    st.subheader("📊 Income Breakdown by Tenant with Renewal Increases")
+    
+    # Create tabs for each year
+    renewal_years = sorted(renewal_breakdowns.keys())
+    renewal_tabs = st.tabs([str(year) for year in renewal_years])
+    
+    # Display breakdowns in tabs
+    for i, year in enumerate(renewal_years):
+        with renewal_tabs[i]:
+            if not renewal_breakdowns[year].empty:
+                st.write(f"### Income Sources for {year} (with renewal increases)")
+                st.dataframe(
+                    renewal_breakdowns[year],
+                    column_config={
+                        "Tenant": "Tenant Name",
+                        "Income with Renewals (Rp)": "Income",
                         "% of Total": "Percentage"
                     },
                     hide_index=True
