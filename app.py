@@ -411,12 +411,12 @@ def main():
     else:
         st.info("No tenants to edit. Add a tenant first.")
 
+    years_before = 1  # Show 1 year before current year
+    years_after = 3   # Show 3 years after current year
+
     # Removed the "Projected vs Actual Income" section with line chart
 
     st.header("📊 Future Income Projection (5-Year Window)")
-    
-    years_before = 1  # Show 1 year before current year
-    years_after = 3   # Show 3 years after current year
     
     # Use the new function that returns both summary and breakdown
     future_df, breakdown_dfs = project_income_with_breakdown(st.session_state["df"], years_before=years_before, years_after=years_after)
