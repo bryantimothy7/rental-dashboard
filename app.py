@@ -107,26 +107,27 @@ def project_income_with_breakdown(df, years_before=1, years_after=3):
             # Calculate end year of current lease
             end_year = start_year + lease_duration
             
-            # Calculate number of lease cycles and which cycle we're in now
-            current_cycle = max(0, (current_year - start_year) // lease_duration)
-            
             # Project income for years in our display range
             for display_year in range(min_year, max_year + 1):
-                # Determine which lease cycle this year falls into
-                cycle_for_year = max(0, (display_year - start_year) // lease_duration)
-                cycle_start_year = start_year + (cycle_for_year * lease_duration)
-                relative_year = display_year - cycle_start_year
+                # Calculate which lease cycle this display year belongs to
+                years_since_start = display_year - start_year
+                if years_since_start < 0:
+                    continue  # Skip years before the lease starts
+                
+                current_cycle = years_since_start // lease_duration
+                cycle_start_year = start_year + (current_cycle * lease_duration)
+                years_into_cycle = display_year - cycle_start_year
                 
                 # Only include if within lease duration
-                if relative_year >= 0 and relative_year < lease_duration:
+                if years_into_cycle >= 0 and years_into_cycle < lease_duration:
                     income_for_year = 0
                     
-                    if scheme == "Full Lease Upfront" and relative_year == 0:
+                    if scheme == "Full Lease Upfront" and years_into_cycle == 0:
                         # Full payment happens in first year of each cycle
                         income_for_year = rent_per_year * lease_duration
-                    elif scheme == "Custom Split" and custom_split and relative_year < len(custom_split):
+                    elif scheme == "Custom Split" and custom_split and years_into_cycle < len(custom_split):
                         # Use custom split percentages
-                        income_for_year = rent_per_year * lease_duration * custom_split[relative_year]
+                        income_for_year = rent_per_year * lease_duration * custom_split[years_into_cycle]
                     else:  # Default: Split evenly
                         income_for_year = rent_per_year
                     
@@ -137,7 +138,7 @@ def project_income_with_breakdown(df, years_before=1, years_after=3):
                     breakdown[display_year][tenant] = breakdown[display_year].get(tenant, 0) + income_for_year
                 
         except Exception as e:
-            # Silently continue on error
+            # Skip entries with errors
             continue
 
     # Convert to DataFrame and format for summary
@@ -152,27 +153,37 @@ def project_income_with_breakdown(df, years_before=1, years_after=3):
     if current_year in proj_df["Year"].values:
         proj_df.loc[proj_df["Year"] == current_year, "Note"] = "Current Year"
     
-    # Format currency for summary
+    # Format currency for summary AFTER calculations are done
     proj_df["Projected Total Income (Rp)"] = proj_df["Projected Total Income (Rp)"].apply(lambda x: format_rupiah(x))
     
     # Create breakdown dataframes
     breakdown_dfs = {}
     for year in years:
         if breakdown[year]:
+            # Store raw values for percentage calculation
+            raw_amounts = {tenant: amount for tenant, amount in breakdown[year].items()}
+            total = sum(raw_amounts.values())
+            
             # Create DataFrame from this year's breakdown
             year_df = pd.DataFrame([
-                {"Tenant": tenant, "Income (Rp)": amount}
-                for tenant, amount in breakdown[year].items()
+                {"Tenant": tenant, "Income (Rp)": amount, "Raw": amount}
+                for tenant, amount in raw_amounts.items()
             ])
+            
             # Sort by income amount (descending)
-            year_df = year_df.sort_values("Income (Rp)", ascending=False)
-            # Format currency
-            year_df["Income (Rp)"] = year_df["Income (Rp)"].apply(lambda x: format_rupiah(x))
-            # Add percentage of total
-            total = sum(breakdown[year].values())
-            year_df["% of Total"] = year_df["Income (Rp)"].apply(
-                lambda x: f"{float(x.replace('Rp ', '').replace('.', '')) / total * 100:.1f}%"
+            year_df = year_df.sort_values("Raw", ascending=False)
+            
+            # Calculate percentages using raw values
+            year_df["% of Total"] = year_df["Raw"].apply(
+                lambda x: f"{(x / total * 100):.1f}%" if total > 0 else "0.0%"
             )
+            
+            # Format currency after calculations
+            year_df["Income (Rp)"] = year_df["Raw"].apply(lambda x: format_rupiah(x))
+            
+            # Remove the Raw column as it's no longer needed
+            year_df = year_df.drop("Raw", axis=1)
+            
             breakdown_dfs[year] = year_df
     
     return proj_df, breakdown_dfs
